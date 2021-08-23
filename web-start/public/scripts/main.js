@@ -15,7 +15,7 @@
  */
 'use strict';
 
-const useFirestore = true;
+const useRealtimeDB = false;
 
 // Signs-in Friendly Chat.
 function signIn() {
@@ -54,55 +54,115 @@ function isUserSignedIn() {
 // Saves a new message on the Firebase DB.
 function saveMessage(messageText) {
   // Add a new message entry to the database.
-  return firebase.database().ref('messages').push({
-    name: getUserName(),
-    text: messageText,
-    profilePicUrl: getProfilePicUrl(),
-    timestamp: firebase.database.ServerValue.TIMESTAMP
-  }).catch(function (error) {
-    console.error('Error writing new message to realime database', error);
-  });
+  if (useRealtimeDB) {
+    return firebase.database().ref('messages').push({
+      name: getUserName(),
+      text: messageText,
+      profilePicUrl: getProfilePicUrl(),
+      timestamp: firebase.database.ServerValue.TIMESTAMP
+    }).catch(function (error) {
+      console.error('Error writing new message to realime database', error);
+    });
+  }
+  else {
+    return firebase.firestore().collection('messages').add({
+      name: getUserName(),
+      text: messageText,
+      profilePicUrl: getProfilePicUrl(),
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(function (error) {
+      console.error('Error writing new message to realime database', error);
+    });
+  }
+}
+
+async function startPerformanceTest() {
+  var t0 = performance.now();
+  for (let i = 1; i <= 100; ++i)
+    await saveMessage(`Messate test text ${i}`);
+  var t1 = performance.now();
+  console.log("Call to add 100 messages took " + (t1 - t0) / 1000.0 + " milliseconds.")
+}
+
+function deleteMessages() {
+  if (useRealtimeDB) {
+    let query = firebase.database().ref('messages');
+    query.remove();
+  }
+  else {
+    firebase.firestore().collection("messages")
+      .get()
+      .then((querySnapshot) => {
+        querySnapshot.forEach((doc) => {
+          doc.ref.delete();
+        });
+      })
+      .catch((error) => {
+        console.log("Error getting documents: ", error);
+      });
+  }
 }
 
 // Loads chat messages history and listens for upcoming ones.
 function loadMessages() {
-  // Create the query to load the last 12 messages and listen for new ones.
-  var query = firebase.database()
-    .ref('messages')
-    .orderByChild('timestamp')
-    .limitToLast(2);
+  if (useRealtimeDB) {
+    // Create the query to load the last 12 messages and listen for new ones.
+    var query = firebase.database()
+      .ref('messages')
+      .orderByChild('timestamp');
+    // .limitToLast(2);
 
 
-  // Listen for comments.
-  var messagesRef = firebase.database().ref('messages');
-  messagesRef.on('child_added', function (data) {
-    var message = data.val();
-    displayMessage(data.key, message.timestamp, message.name,
-      message.text, message.profilePicUrl, message.imageUrl);
-  });
+    // Listen for comments.
+    var messagesRef = firebase.database().ref('messages');
+    messagesRef.on('child_added', function (data) {
+      var message = data.val();
+      displayMessage(data.key, message.timestamp, message.name,
+        message.text, message.profilePicUrl, message.imageUrl);
+    });
 
-  messagesRef.on('child_changed', function (data) {
-    var message = data.val();
-    displayMessage(data.key, message.timestamp, message.name,
-      message.text, message.profilePicUrl, message.imageUrl);
-  });
+    messagesRef.on('child_changed', function (data) {
+      var message = data.val();
+      displayMessage(data.key, message.timestamp, message.name,
+        message.text, message.profilePicUrl, message.imageUrl);
+    });
 
-  messagesRef.on('child_removed', function (data) {
-    deleteMessage(data.key);
-  });
+    messagesRef.on('child_removed', function (data) {
+      deleteMessage(data.key);
+    });
 
-  // // Start listening to the query.
-  // query.onSnapshot(function (snapshot) {
-  //   snapshot.docChanges().forEach(function (change) {
-  //     if (change.type === 'removed') {
-  //       deleteMessage(change.doc.id);
-  //     } else {
-  //       var message = change.doc.data();
-  //       displayMessage(change.doc.id, message.timestamp, message.name,
-  //         message.text, message.profilePicUrl, message.imageUrl);
-  //     }
-  //   });
-  // });
+    // Start listening to the query.
+    query.onSnapshot(function (snapshot) {
+      snapshot.docChanges().forEach(function (change) {
+        if (change.type === 'removed') {
+          deleteMessage(change.doc.id);
+        } else {
+          var message = change.doc.data();
+          displayMessage(change.doc.id, message.timestamp, message.name,
+            message.text, message.profilePicUrl, message.imageUrl);
+        }
+      });
+    });
+  }
+  else {
+    var query = firebase.firestore()
+      .collection('messages')
+      .orderBy('timestamp', "desc");
+    // .limit(12);
+
+    // Start listening to the query.
+    query.onSnapshot(function (snapshot) {
+      snapshot.docChanges().forEach(function (change) {
+        if (change.type === 'removed') {
+          deleteMessage(change.doc.id);
+        } else {
+          var message = change.doc.data();
+          displayMessage(change.doc.id, message.timestamp, message.name,
+            message.text, message.profilePicUrl, message.imageUrl);
+        }
+      });
+    });
+  }
 }
 
 // Saves a new message containing an image in Firebase.
@@ -113,17 +173,17 @@ function saveImageMessage(file) {
 
 // Saves the messaging device token to the datastore.
 function saveMessagingDeviceToken() {
-  firebase.messaging().getToken().then(function(currentToken) {
+  firebase.messaging().getToken().then(function (currentToken) {
     if (currentToken) {
       console.log('Got FCM device token:', currentToken);
       // Saving the Device Token to the datastore.
       firebase.database().ref('fcmTokens/' + currentToken)
-          .set({uid: firebase.auth().currentUser.uid});
+        .set({ uid: firebase.auth().currentUser.uid });
     } else {
       // Need to request permissions to show notifications.
       requestNotificationsPermissions();
     }
-  }).catch(function(error){
+  }).catch(function (error) {
     console.error('Unable to get messaging token.', error);
   });
 }
@@ -131,10 +191,10 @@ function saveMessagingDeviceToken() {
 // Requests permissions to show notifications.
 function requestNotificationsPermissions() {
   console.log('Requesting notifications permission...');
-  firebase.messaging().requestPermission().then(function() {
+  firebase.messaging().requestPermission().then(function () {
     // Notification permission granted.
     saveMessagingDeviceToken();
-  }).catch(function(error) {
+  }).catch(function (error) {
     console.error('Unable to get permission to notify.', error);
   });
 }
